@@ -690,6 +690,157 @@ def dedupe_results(results: list[dict]) -> list[dict]:
     return out
 
 
+
+
+def normalize_spaces(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _is_numeric_score_line(text: str) -> bool:
+    text = normalize_spaces(text)
+    if not text:
+        return False
+    if RESULT_WALKOVER_RE.search(text) or RESULT_RETIREMENT_RE.search(text):
+        return True
+    patterns = [
+        r"(?:\d{1,2}-\d{1,2}(?:\(\d+\))?)(?:\s+(?:\d{1,2}-\d{1,2}(?:\(\d+\))?))*",
+        r"(?:\d{1,2}\s+\d{1,2})(?:\s+\d{1,2}\s+\d{1,2})*",
+    ]
+    return any(re.fullmatch(p, text) for p in patterns)
+
+
+def _normalize_score_text(text: str) -> str:
+    text = normalize_spaces(text)
+    if not text:
+        return ""
+    if RESULT_WALKOVER_RE.search(text):
+        return "W/O"
+    if RESULT_RETIREMENT_RE.search(text) and not re.search(r"\bRET\b", text, re.IGNORECASE):
+        text = f"{text} RET".strip()
+
+    compact_pairs = re.findall(r"\b(\d{1,2})\s+(\d{1,2})(?=\s|$)", text)
+    if compact_pairs and "-" not in text:
+        return " ".join(f"{a}-{b}" for a, b in compact_pairs)
+
+    return text
+
+
+def _is_probable_player_line(text: str) -> bool:
+    text = normalize_spaces(text)
+    if not text:
+        return False
+    if text in ROUND_HEADER_TO_LABEL:
+        return False
+    if _is_numeric_score_line(text):
+        return False
+    if text.lower() in {
+        "results", "scores", "all singles doubles", "singles", "doubles",
+        "completed", "live", "upcoming", "suspended", "cancelled",
+    }:
+        return False
+    if any(ch.isdigit() for ch in text):
+        return False
+    return bool(re.fullmatch(
+        r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'`\-.\[\]/ ]*[A-Za-zÀ-ÿ\].]|"
+        r"[A-Z]\.\s+[A-Za-zÀ-ÿ'`\-.\[\]/ ]+",
+        text
+    ))
+
+
+def _parse_results_blocks_from_lines(lines: list[str]) -> list[dict]:
+    lines = [normalize_spaces(line) for line in lines if normalize_spaces(line)]
+    results: list[dict] = []
+    current_round = ""
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        if line in ROUND_HEADER_TO_LABEL:
+            current_round = line
+            i += 1
+            continue
+
+        label = map_atp_round_to_label(current_round)
+        if not label:
+            i += 1
+            continue
+
+        player1 = player2 = winner = score_raw = ""
+        consumed = 1
+
+        if line.startswith("Game Set and Match "):
+            m = re.search(
+                r"Game Set and Match\s+(.+?)\.\s+\1\s+wins the match\s+(.+?)\.?$",
+                line,
+                flags=re.IGNORECASE,
+            )
+            if m:
+                winner = normalize_spaces(m.group(1))
+                score_raw = _normalize_score_text(m.group(2))
+                results.append({
+                    "round": label,
+                    "winner_name_raw": winner,
+                    "score_raw": score_raw,
+                    "player1_name_raw": "",
+                    "player2_name_raw": "",
+                    "outcome_type": classify_result_outcome(score_raw),
+                    "source": "results_page_blocks",
+                })
+            i += consumed
+            continue
+
+        if _is_probable_player_line(line) and i + 1 < len(lines) and _is_probable_player_line(lines[i + 1]):
+            player1 = line
+            player2 = lines[i + 1]
+            consumed = 2
+
+            if i + 2 < len(lines) and _is_numeric_score_line(lines[i + 2]):
+                score_raw = _normalize_score_text(lines[i + 2])
+                consumed = 3
+
+            winner_line_idx = i + consumed
+            if winner_line_idx < len(lines):
+                winner_line = lines[winner_line_idx]
+                if winner_line.startswith("Game Set and Match "):
+                    m = re.search(
+                        r"Game Set and Match\s+(.+?)\.\s+\1\s+wins the match\s+(.+?)\.?$",
+                        winner_line,
+                        flags=re.IGNORECASE,
+                    )
+                    if m:
+                        winner = normalize_spaces(m.group(1))
+                        if not score_raw:
+                            score_raw = _normalize_score_text(m.group(2))
+                        consumed += 1
+
+            if not winner and score_raw:
+                pairs = parse_score_pairs_from_score_raw(score_raw)
+                a_sets, b_sets = count_sets_from_pairs(pairs)
+                if a_sets > b_sets:
+                    winner = player1
+                elif b_sets > a_sets:
+                    winner = player2
+
+            if winner or score_raw:
+                results.append({
+                    "round": label,
+                    "winner_name_raw": winner,
+                    "score_raw": score_raw,
+                    "player1_name_raw": player1,
+                    "player2_name_raw": player2,
+                    "outcome_type": classify_result_outcome(score_raw),
+                    "source": "results_page_blocks",
+                })
+
+            i += consumed
+            continue
+
+        i += 1
+
+    return dedupe_results(results)
+
+
 def fetch_abbrev_names_from_draw_page(draw_page_url: str, session: requests.Session | None = None) -> list[str]:
     session = session or make_requests_session()
     resp = http_get(session, draw_page_url, timeout=30)
@@ -749,11 +900,13 @@ def fetch_results_page(results_page_url: str, session: requests.Session | None =
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict] = []
 
+    # 1) Embedded JSON / script data
     for candidate in extract_json_candidates_from_html(html):
         try:
             data = json.loads(candidate)
         except Exception:
             continue
+
         for obj in _walk_json(data):
             if not isinstance(obj, dict):
                 continue
@@ -786,30 +939,29 @@ def fetch_results_page(results_page_url: str, session: requests.Session | None =
             if not winner_name and not score_raw and not (player1 and player2):
                 continue
 
+            score_raw = _normalize_score_text(score_raw or "")
             results.append({
                 "round": label,
-                "winner_name_raw": (winner_name or "").strip(),
-                "score_raw": (score_raw or "").strip(),
-                "player1_name_raw": (player1 or "").strip(),
-                "player2_name_raw": (player2 or "").strip(),
-                "outcome_type": classify_result_outcome(score_raw or ""),
-                "source": "results_page",
+                "winner_name_raw": normalize_spaces(winner_name or ""),
+                "score_raw": score_raw,
+                "player1_name_raw": normalize_spaces(player1 or ""),
+                "player2_name_raw": normalize_spaces(player2 or ""),
+                "outcome_type": classify_result_outcome(score_raw),
+                "source": "results_page_json",
             })
 
-    if results:
-        return dedupe_results(results)
-
-    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    # 2) Regex fallback sul testo completo
+    text_content = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
     pattern = re.compile(
         r"(Round of 128|Round of 96|Round of 64|Round of 48|Round of 32|Round of 24|Round of 16|Quarterfinals|Semifinals|Final)"
         r".*?Game Set and Match\s+([A-Za-zÀ-ÿ'`\-.\s]+?)\.\s+"
         r"(?:\2)\s+wins the match\s+([0-9\-\(\)\sA-Za-z/.]+?)\s*\.",
         re.IGNORECASE,
     )
-    for m in pattern.finditer(text):
-        round_text = m.group(1).strip()
-        winner_name = " ".join(m.group(2).split())
-        score_raw = " ".join(m.group(3).split())
+    for m in pattern.finditer(text_content):
+        round_text = normalize_spaces(m.group(1))
+        winner_name = normalize_spaces(m.group(2))
+        score_raw = _normalize_score_text(m.group(3))
         label = map_atp_round_to_label(round_text)
         if not label:
             continue
@@ -820,8 +972,13 @@ def fetch_results_page(results_page_url: str, session: requests.Session | None =
             "player1_name_raw": "",
             "player2_name_raw": "",
             "outcome_type": classify_result_outcome(score_raw),
-            "source": "results_page",
+            "source": "results_page_regex",
         })
+
+    # 3) Fallback a blocchi su testo renderizzato
+    lines = [normalize_spaces(s) for s in soup.stripped_strings]
+    results.extend(_parse_results_blocks_from_lines(lines))
+
     return dedupe_results(results)
 
 
@@ -1135,3 +1292,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
