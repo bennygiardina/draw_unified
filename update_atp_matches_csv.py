@@ -1284,6 +1284,46 @@ def replace_positions_from_draw_page(positions: list[dict], draw_page_entries: l
     return positions
 
 
+def build_positions_from_draw_page(draw_page_entries: list[str]) -> list[dict]:
+    positions: list[dict] = []
+    for draw_position, entry in enumerate(draw_page_entries, start=1):
+        normalized = normalize_spaces(entry)
+        if not normalized:
+            continue
+        if normalized.lower() == "bye":
+            positions.append({
+                "draw_position": draw_position,
+                "seed": "",
+                "entry_status": "",
+                "player_name": "bye",
+                "raw_name": "Bye",
+                "country": "",
+                "slot_type": "bye",
+            })
+            continue
+        raw_name = re.sub(r"\s*(?:\[.*?\])+$", "", normalized).strip()
+        seed = ""
+        entry_status = ""
+        for token in re.findall(r"\[([^\]]+)\]", normalized):
+            token = normalize_spaces(token)
+            if token.isdigit():
+                seed = token
+            else:
+                upper = token.upper()
+                if upper in {"WC", "Q", "LL", "PR", "ALT"}:
+                    entry_status = upper
+        positions.append({
+            "draw_position": draw_position,
+            "seed": seed,
+            "entry_status": entry_status,
+            "player_name": normalized,
+            "raw_name": raw_name,
+            "country": "",
+            "slot_type": "player",
+        })
+    return positions
+
+
 def get_round_label_from_context(current_slots: int, initial_slots: int, bye_count: int) -> str:
     if initial_slots in {32, 64} and bye_count > 0:
         mapping = {
@@ -1656,9 +1696,12 @@ def fetch_and_build_rows(draw_page_url: str, results_page_url: str, fallback_pdf
             print(f"\n--- PDF PAGE {index} PREVIEW ---\n{preview}\n", file=sys.stderr, flush=True)
 
     released_at = extract_released_at(pages_text)
-    positions = parse_draw_positions(pages_text)
+    pdf_positions = parse_draw_positions(pages_text)
     draw_page_entries = extract_first_round_entries_from_draw_page(draw_page_url, session=session)
-    positions = replace_positions_from_draw_page(positions, draw_page_entries)
+    if len(draw_page_entries) in SUPPORTED_DRAW_SIZES:
+        positions = build_positions_from_draw_page(draw_page_entries)
+    else:
+        positions = replace_positions_from_draw_page(pdf_positions, draw_page_entries)
     results_list = fetch_results_page(results_page_url, session=session)
     positions = replace_truncated_pdf_names(positions, results_list)
     round_results = group_results_by_round(results_list)
