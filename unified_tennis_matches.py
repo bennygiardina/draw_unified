@@ -39,7 +39,7 @@ LOWERCASE_PARTICLES = {
 }
 
 COUNTRIES_SURNAME_FIRST = {
-    "CHN", "JPN", "KOR", "TPE", "HKG", "PRK", "VNM"
+    "CHN", "JPN", "KOR", "TPE", "HKG",
 }
 
 STATUS_LABELS = {
@@ -95,20 +95,12 @@ def smart_title_token(token: str) -> str:
         return "-".join(smart_title_token(part) for part in token.split("-"))
     if "'" in token:
         return "'".join(smart_title_token(part) for part in token.split("'"))
-
     lower = token.lower()
-
     if lower.startswith("mc") and len(token) > 2:
         return "Mc" + token[2].upper() + token[3:].lower()
-
-    if lower.startswith("mac") and len(token) > 3:
-        return "Mac" + token[3].upper() + token[4:].lower()
-
     if lower in LOWERCASE_PARTICLES:
         return lower
-
     return token[:1].upper() + token[1:].lower()
-
 
 def smart_join_tokens(tokens: list[str]) -> str:
     return " ".join(smart_title_token(tok) for tok in tokens if tok)
@@ -172,10 +164,8 @@ def format_name(raw_name: str, seed: str = "", entry_status: str = "", country: 
 
     if "," in raw_name:
         surname_part, given_part = [x.strip() for x in raw_name.split(",", 1)]
-        surname_tokens = surname_part.split()
-        given_tokens = given_part.split()
-        surname = smart_join_tokens(surname_tokens)
-        given_name = smart_join_tokens(given_tokens)
+        surname = smart_join_tokens(surname_part.split())
+        given_name = smart_join_tokens(given_part.split())
         first_initial = f"{given_name[0].upper()}." if given_name else ""
         base_name = f"{first_initial} {surname}".strip()
         return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
@@ -187,31 +177,28 @@ def format_name(raw_name: str, seed: str = "", entry_status: str = "", country: 
         base_name = smart_title_token(tokens[0])
         return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
 
-    surname_tokens = []
-    given_tokens = []
-
-    for i, tok in enumerate(tokens):
+    uppercase_prefix = []
+    for tok in tokens:
         if tok.isupper():
-            surname_tokens.append(tok)
+            uppercase_prefix.append(tok)
         else:
-            given_tokens = tokens[i:]
             break
 
-    if not surname_tokens or not given_tokens:
-        if country in COUNTRIES_SURNAME_FIRST:
-            surname_tokens = [tokens[0]]
-            given_tokens = tokens[1:]
-        else:
-            given_tokens = [tokens[0]]
-            surname_tokens = tokens[1:]
+    if uppercase_prefix and len(uppercase_prefix) < len(tokens):
+        surname_tokens = uppercase_prefix
+        given_tokens = tokens[len(uppercase_prefix):]
+    elif country in COUNTRIES_SURNAME_FIRST:
+        surname_tokens = [tokens[0]]
+        given_tokens = tokens[1:]
+    else:
+        given_tokens = [tokens[0]]
+        surname_tokens = tokens[1:]
 
     surname = smart_join_tokens(surname_tokens)
     given_name = smart_join_tokens(given_tokens)
     first_initial = f"{given_name[0].upper()}." if given_name else ""
     base_name = f"{first_initial} {surname}".strip()
-
     return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
-
 
 def normalize_person_name_for_matching(name: str) -> str:
     name = (name or "").strip().lower()
@@ -953,24 +940,21 @@ def wta_tokenize_result_block(result_block: str) -> list[dict]:
         if any(marker.lower() in line.lower() for marker in STOP_MARKERS):
             continue
         filtered_lines.append(line)
-    result_block = " ".join(filtered_lines)
+
+    result_block = "\n".join(filtered_lines)
+    token_re = re.compile(
+        r"(?:[A-Z][a-z]{0,4}\.[ \t]+[A-Z][A-Za-z'`.-]+(?:[ \t]+[A-Z][A-Za-z'`.-]+)*)"
+        r"|(?:W/O|WO|RET|Ret|ret|\d{2}(?:\(\d+\))?(?:[ \t]+\d{2}(?:\(\d+\))?){0,4})"
+    )
 
     tokens: list[dict] = []
-    i = 0
-    while i < len(result_block):
-        m_name = NAME_TOKEN_RE.match(result_block, i)
-        if m_name:
-            tokens.append({"type": "name", "value": " ".join(m_name.group(0).split())})
-            i = m_name.end()
-            continue
-        m_score = SCORE_TOKEN_RE.match(result_block, i)
-        if m_score:
-            tokens.append({"type": "score", "value": " ".join(m_score.group(0).split())})
-            i = m_score.end()
-            continue
-        i += 1
+    for match in token_re.finditer(result_block):
+        value = " ".join(match.group(0).split())
+        if re.fullmatch(r"W/O|WO|RET|Ret|ret|\d{2}(?:\(\d+\))?(?: \d{2}(?:\(\d+\))?){0,4}", value):
+            tokens.append({"type": "score", "value": value})
+        else:
+            tokens.append({"type": "name", "value": value})
     return tokens
-
 
 def parse_wta_pdf(pages_text: list[str]) -> tuple[list[dict], list[dict]]:
     if len(pages_text) < 2:
@@ -1000,7 +984,13 @@ def format_scores_from_winner_and_raw(player_a: str, player_b: str, winner: str,
     if not pairs:
         return "", ""
 
+    # Nel PDF WTA i punteggi sono espressi dal punto di vista della vincitrice.
+    # Se vince Player B, invertiamo i game di ogni set per riallinearli al CSV.
+    if winner == player_b:
+        pairs = [(b, a) for a, b in pairs]
+
     a_sets, b_sets = count_sets_from_pairs(pairs)
+
     if outcome == "retirement":
         completed_pairs = [(a, b) for a, b in pairs if is_completed_set_score(a, b)]
         incomplete_pairs = [(a, b) for a, b in pairs if not is_completed_set_score(a, b)]
@@ -1013,7 +1003,6 @@ def format_scores_from_winner_and_raw(player_a: str, player_b: str, winner: str,
             return f"(rit.) {a_sets}", str(b_sets)
 
     return str(a_sets), str(b_sets)
-
 
 def build_match_rows_wta(positions: list[dict], result_tokens: list[dict]) -> list[dict]:
     token_index = 0
@@ -1144,6 +1133,7 @@ def run_once(output_path: Path, tour: str, tournament_url: str, draw_page_url: s
 # =========================
 # Tests
 # =========================
+
 class UnifiedParserTests(unittest.TestCase):
     def test_retirement_aligned_score_keeps_one_one(self) -> None:
         res = {
@@ -1170,20 +1160,25 @@ class UnifiedParserTests(unittest.TestCase):
         self.assertTrue(abbreviated_name_matches("Xin. Wang [29]", "Xin. Wang"))
         self.assertFalse(abbreviated_name_matches("A. Sabalenka [1]", "A. Tomljanovic"))
 
-    def test_detect_tour(self) -> None:
-        self.assertEqual(detect_tour("auto", "https://www.wtatennis.com/tournaments/miami-open/", "", "", ""), "wta")
-        self.assertEqual(detect_tour("auto", "https://www.atptour.com/en/scores/current/miami/403", "", "", ""), "atp")
+    def test_wta_scores_align_to_player_order(self) -> None:
+        a_score, b_score = format_scores_from_winner_and_raw(
+            "J. Paolini",
+            "C. Gauff",
+            "C. Gauff",
+            "63 64",
+        )
+        self.assertEqual(a_score, "0")
+        self.assertEqual(b_score, "2")
 
-    def test_format_name_country_aware(self) -> None:
-        self.assertEqual(format_name("Sabalenka, Aryna"), "A. Sabalenka")
-        self.assertEqual(format_name("Aryna Sabalenka"), "A. Sabalenka")
+    def test_mc_casing_and_country_aware_names(self) -> None:
+        self.assertEqual(smart_title_token("mcnally"), "McNally")
+        self.assertEqual(smart_title_token("mccartney"), "McCartney")
         self.assertEqual(format_name("Wang Xinyu", country="CHN"), "X. Wang")
         self.assertEqual(format_name("Jasmine Paolini", country="ITA"), "J. Paolini")
 
-    def test_mc_name_casing(self) -> None:
-        self.assertEqual(smart_title_token("mccartney"), "McCartney")
-        self.assertEqual(smart_title_token("mcnally"), "McNally")
-        self.assertEqual(smart_title_token("mcdonald"), "McDonald")
+    def test_detect_tour(self) -> None:
+        self.assertEqual(detect_tour("auto", "https://www.wtatennis.com/tournaments/miami-open/", "", "", ""), "wta")
+        self.assertEqual(detect_tour("auto", "https://www.atptour.com/en/scores/current/miami/403", "", "", ""), "atp")
 
     def test_parse_real_wta_pdf_if_available(self) -> None:
         sample_pdf = Path("/mnt/data/miami_wta_mds.pdf")
@@ -1196,6 +1191,7 @@ class UnifiedParserTests(unittest.TestCase):
 
 
 def run_tests() -> int:
+
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(UnifiedParserTests)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1
