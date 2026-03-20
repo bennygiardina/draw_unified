@@ -824,6 +824,63 @@ def build_match_rows(positions: list[dict], round_results: dict[str, list[dict]]
     initial_size = len(current)
 
     while len(current) > 1:
+        # Caso speciale: draw ATP da 96
+        if len(current) == 96:
+            round_label = "1° turno"
+            next_round = []
+            results_for_round = round_results.get(round_label, [])
+            used = [False] * len(results_for_round)
+
+            # Nei 96 draw, il primo turno non è 96/2 = 48 "normale":
+            # bisogna costruire il passaggio al tabellone da 64.
+            #
+            # Questa implementazione assume che il PDF ATP contenga già i bye
+            # in modo coerente come slot "bye". Se non li contiene, serve una
+            # normalizzazione ulteriore del draw prima di arrivare qui.
+            for i in range(0, len(current), 2):
+                a_name = current[i]["name"]
+                b_name = current[i + 1]["name"] if i + 1 < len(current) else ""
+                winner = ""
+                a_sets = ""
+                b_sets = ""
+
+                if a_name == "bye" and b_name and b_name != "bye":
+                    winner = b_name
+                elif b_name == "bye" and a_name and a_name != "bye":
+                    winner = a_name
+                elif a_name == "bye" and b_name == "bye":
+                    winner = ""
+
+                if not winner:
+                    for idx, res in enumerate(results_for_round):
+                        if used[idx]:
+                            continue
+                        if not match_result_to_players(a_name, b_name, res):
+                            continue
+                        candidate_winner = resolve_winner_from_results_page(
+                            a_name, b_name, res.get("winner_name_raw", "")
+                        )
+                        if not candidate_winner:
+                            continue
+                        used[idx] = True
+                        winner = candidate_winner
+                        a_sets, b_sets = format_scores_from_result(a_name, b_name, winner, res)
+                        break
+
+                match_rows.append({
+                    "Round": round_label,
+                    "Player A": a_name,
+                    "Player B": b_name,
+                    "Winner": winner,
+                    "Participant A score": a_sets,
+                    "Participant B score": b_sets,
+                })
+                if winner:
+                    next_round.append({"name": winner, "slot_type": "player"})
+
+            current = next_round
+            continue
+
         round_size = len(current) // 2
         round_label = get_round_label(round_size, initial_size)
         next_round = []
@@ -869,6 +926,7 @@ def build_match_rows(positions: list[dict], round_results: dict[str, list[dict]]
                 "Participant B score": b_sets,
             })
             next_round.append({"name": winner, "slot_type": "player" if winner else "unknown"})
+
         current = next_round
 
     return match_rows
