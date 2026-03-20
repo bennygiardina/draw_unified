@@ -834,7 +834,7 @@ def resolve_runtime_urls(tournament_url: str, draw_page_url: str, results_page_u
     return draw_page_url, results_page_url, tournament_id, fallback_pdf_url
 
 
-def fetch_and_build_rows_atp(tournament_url: str, draw_page_url: str, results_page_url: str, tournament_id: str, year: int) -> tuple[list[dict], dict]:
+def fetch_and_build_rows_atp(tournament_url: str, draw_page_url: str, results_page_url: str, tournament_id: str, year: int, pdf_url: str = "") -> tuple[list[dict], dict]:
     draw_page_url, results_page_url, tournament_id, fallback_pdf_url = resolve_runtime_urls(
         tournament_url=tournament_url,
         draw_page_url=draw_page_url,
@@ -843,8 +843,21 @@ def fetch_and_build_rows_atp(tournament_url: str, draw_page_url: str, results_pa
         year=year,
     )
     session = make_requests_session()
-    pdf_url = discover_pdf_url(session, draw_page_url, fallback_pdf_url)
-    pdf_resp = http_get(session, pdf_url, timeout=60)
+    explicit_pdf_url = (pdf_url or "").strip()
+    if explicit_pdf_url:
+        lower_pdf = explicit_pdf_url.lower()
+        if "wtafiles.wtatennis.com" in lower_pdf or "wtatennis.com" in lower_pdf:
+            print(
+                f"[{utc_now_iso()}] WARN | PDF WTA ignorato in modalità ATP, uso PDF ATP scoperto/fallback | pdf={explicit_pdf_url}",
+                file=sys.stderr,
+                flush=True,
+            )
+            resolved_pdf_url = discover_pdf_url(session, draw_page_url, fallback_pdf_url)
+        else:
+            resolved_pdf_url = explicit_pdf_url
+    else:
+        resolved_pdf_url = discover_pdf_url(session, draw_page_url, fallback_pdf_url)
+    pdf_resp = http_get(session, resolved_pdf_url, timeout=60)
     pages_text = extract_pdf_text(pdf_resp.content)
     positions = parse_draw_positions(pages_text)
     positions = repair_truncated_names_from_draw_page(positions, draw_page_url, session=session)
@@ -854,7 +867,7 @@ def fetch_and_build_rows_atp(tournament_url: str, draw_page_url: str, results_pa
         "tour": "atp",
         "source_draw_page": draw_page_url,
         "source_results_page": results_page_url,
-        "source_pdf": pdf_url,
+        "source_pdf": resolved_pdf_url,
         "released_at": extract_released_at(pages_text),
         "fetched_at": utc_now_iso(),
         "positions": len(positions),
@@ -1096,7 +1109,7 @@ def fetch_and_build_rows_wta(pdf_url: str) -> tuple[list[dict], dict]:
     return rows, {
         "tour": "wta",
         "source_tournament": DEFAULT_WTA_TOURNAMENT_URL,
-        "source_pdf": pdf_url,
+        "source_pdf": resolved_pdf_url,
         "released_at": extract_released_at(pages_text),
         "fetched_at": utc_now_iso(),
         "positions": len(positions),
@@ -1128,6 +1141,7 @@ def fetch_and_build_rows_auto(tour: str, tournament_url: str, draw_page_url: str
         results_page_url=results_page_url or DEFAULT_ATP_RESULTS_PAGE,
         tournament_id=tournament_id or DEFAULT_ATP_TOURNAMENT_ID,
         year=year,
+        pdf_url=pdf_url,
     )
 
 
@@ -1208,6 +1222,17 @@ class UnifiedParserTests(unittest.TestCase):
     def test_detect_tour(self) -> None:
         self.assertEqual(detect_tour("auto", "https://www.wtatennis.com/tournaments/miami-open/", "", "", ""), "wta")
         self.assertEqual(detect_tour("auto", "https://www.atptour.com/en/scores/current/miami/403", "", "", ""), "atp")
+
+    def test_atp_fallback_pdf_format(self) -> None:
+        _, _, tournament_id, fallback_pdf_url = resolve_runtime_urls(
+            tournament_url="https://www.atptour.com/en/scores/current/indian-wells/404/",
+            draw_page_url="https://www.atptour.com/en/scores/current/indian-wells/404/draws",
+            results_page_url="https://www.atptour.com/en/scores/current/indian-wells/404/results",
+            tournament_id="404",
+            year=2026,
+        )
+        self.assertEqual(tournament_id, "404")
+        self.assertEqual(fallback_pdf_url, "https://www.protennislive.com/posting/2026/404/mds.pdf")
 
     def test_parse_real_wta_pdf_if_available(self) -> None:
         sample_pdf = Path("/mnt/data/miami_wta_mds.pdf")
