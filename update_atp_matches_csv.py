@@ -62,11 +62,16 @@ ROUND_HEADER_TO_CANONICAL = {
     "Second Round": "R2",
     "Third Round": "R3",
     "Fourth Round": "R4",
+    "Quarterfinal": "QF",
     "Quarterfinals": "QF",
     "Quarter-Finals": "QF",
+    "Quarter-Final": "QF",
+    "Semifinal": "SF",
     "Semifinals": "SF",
     "Semi-Finals": "SF",
+    "Semi-Final": "SF",
     "Final": "F",
+    "Finals": "F",
 }
 
 RESULT_RETIREMENT_RE = re.compile(r"\b(?:RET|Ret|ret|retired|retirement|RIT\.?)\b", re.IGNORECASE)
@@ -175,7 +180,7 @@ def get_round_label(round_size: int, initial_draw_size: int) -> str:
 
 
 def map_atp_round_to_canonical(round_text: str) -> str | None:
-    rt = normalize_spaces(round_text or "")
+    rt = normalize_spaces(round_text or "").lstrip("#").strip()
     if not rt:
         return None
 
@@ -196,12 +201,15 @@ def map_atp_round_to_canonical(round_text: str) -> str | None:
         "second round": "R64",
         "third round": "R32",
         "fourth round": "R16",
+        "quarter final": "QF",
         "quarter finals": "QF",
         "quarterfinal": "QF",
         "quarterfinals": "QF",
+        "semi final": "SF",
         "semi finals": "SF",
         "semifinal": "SF",
         "semifinals": "SF",
+        "final": "F",
         "finals": "F",
         "championship": "F",
     }
@@ -259,11 +267,7 @@ def format_name(raw_name: str, seed: str = "", entry_status: str = "", country: 
         given_name = smart_join_tokens(given_tokens)
         first_initial = f"{given_name[0].upper()}." if given_name else ""
         
-        # 👉 NUOVA LOGICA per paesi con cognome prima
-        if country in FAMILY_NAME_FIRST_COUNTRIES and normalized_raw_name not in FAMILY_NAME_FIRST_EXCEPTIONS:
-            base_name = f"{surname} {first_initial}".strip()
-        else:
-            base_name = f"{first_initial} {surname}".strip()
+        base_name = f"{first_initial} {surname}".strip()
 
     extras = []
     if seed:
@@ -346,6 +350,22 @@ def infer_results_page_url_from_draw(draw_page_url: str) -> str:
     return f"{url}/results"
 
 
+def current_to_archive_url(url: str, year: int, page: str) -> str:
+    url = normalize_tournament_url(url)
+    if not url:
+        return ""
+    m = re.search(r"/en/scores/current(?:-challenger)?/([^/]+)/([^/]+)(?:/(draws|results))?$", url)
+    if not m:
+        return ""
+    slug, tournament_id = m.group(1), m.group(2)
+    return f"https://www.atptour.com/en/scores/archive/{slug}/{tournament_id}/{year}/{page}"
+
+
+def page_explicitly_has_no_current_draws(html: str) -> bool:
+    compact = normalize_spaces(BeautifulSoup(html or "", "html.parser").get_text(" ", strip=True))
+    return "there are currently no draws" in compact.lower()
+
+
 def make_requests_session() -> requests.Session:
     session = requests.Session()
     retry = Retry(
@@ -379,21 +399,23 @@ def http_get(session: requests.Session, url: str, timeout: int = 30) -> requests
     return resp
 
 
-def discover_pdf_url(session: requests.Session, draw_page_url: str, fallback_pdf_url: str) -> str:
+def discover_pdf_url(session: requests.Session, draw_page_url: str, fallback_pdf_url: str) -> tuple[str, str, bool]:
+    resolved_draw_page_url = draw_page_url
+    used_archive_fallback = False
     try:
         resp = http_get(session, draw_page_url, timeout=30)
         soup = BeautifulSoup(resp.text, "html.parser")
         for a in soup.select("a[href]"):
             href = a.get("href", "")
             if "protennislive.com" in href and href.lower().endswith("mds.pdf"):
-                return href
+                return href, resolved_draw_page_url, used_archive_fallback
     except requests.RequestException as exc:
         print(
             f"[{utc_now_iso()}] WARN | draw page non raggiungibile, uso fallback PDF | url={draw_page_url} | err={exc}",
             file=sys.stderr,
             flush=True,
         )
-    return fallback_pdf_url
+    return fallback_pdf_url, resolved_draw_page_url, used_archive_fallback
 
 
 def extract_pdf_text(pdf_bytes: bytes) -> list[str]:
@@ -822,7 +844,7 @@ def _parse_results_blocks_from_lines(lines: list[str]) -> list[dict]:
     results: list[dict] = []
     i = 0
     while i < len(lines):
-        line = normalize_spaces(lines[i])
+        line = normalize_spaces(lines[i]).lstrip("#").strip()
         canonical_round = map_atp_round_to_canonical(line)
         if not canonical_round:
             i += 1
@@ -831,8 +853,8 @@ def _parse_results_blocks_from_lines(lines: list[str]) -> list[dict]:
         j = i + 1
         block: list[str] = []
         while j < len(lines):
-            nxt = normalize_spaces(lines[j])
-            if map_atp_round_to_canonical(nxt) or re.match(r"^####\s+", nxt):
+            nxt = normalize_spaces(lines[j]).lstrip("#").strip()
+            if map_atp_round_to_canonical(nxt) or re.match(r"^####\s+", lines[j]):
                 break
             block.append(nxt)
             j += 1
@@ -894,10 +916,10 @@ def _parse_results_blocks_from_lines(lines: list[str]) -> list[dict]:
             score2_lines = [x for x in block[idx2 + 1:tail_end] if _is_numeric_score_line(x)]
             if score1_lines and score2_lines:
                 explicit_a_sets, explicit_b_sets = _extract_sets_won_from_block(score1_lines, score2_lines)
-                if explicit_a_sets or explicit_b_sets:
+                if explicit_a_sets is not None and explicit_b_sets is not None:
                     if not winner_name:
                         winner_name = players[0] if explicit_a_sets > explicit_b_sets else players[1] if explicit_b_sets > explicit_a_sets else ""
-                    if not score_raw:
+                    if not score_raw and (explicit_a_sets or explicit_b_sets):
                         score_raw = f"{explicit_a_sets}-{explicit_b_sets}"
 
         if players or winner_name or score_raw:
@@ -1360,6 +1382,64 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def maybe_switch_current_urls_to_archive(
+    session: requests.Session,
+    draw_page_url: str,
+    results_page_url: str,
+    fallback_pdf_url: str,
+    year: int,
+) -> tuple[str, str, str, bool]:
+    draw_page_url = normalize_tournament_url(draw_page_url)
+    results_page_url = normalize_tournament_url(results_page_url)
+    pdf_url = fallback_pdf_url
+    used_archive_fallback = False
+
+    try:
+        resp = http_get(session, draw_page_url, timeout=30)
+        html = resp.text
+    except requests.RequestException as exc:
+        print(
+            f"[{utc_now_iso()}] WARN | draw page non raggiungibile, provo comunque con fallback PDF | url={draw_page_url} | err={exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return draw_page_url, results_page_url, pdf_url, used_archive_fallback
+
+    if "/current/" in draw_page_url and page_explicitly_has_no_current_draws(html):
+        archive_draw_page = current_to_archive_url(draw_page_url, year, "draws")
+        archive_results_page = current_to_archive_url(results_page_url or infer_results_page_url_from_draw(draw_page_url), year, "results")
+        if archive_draw_page:
+            draw_page_url = archive_draw_page
+            used_archive_fallback = True
+            print(
+                f"[{utc_now_iso()}] INFO | current draw page senza draw correnti, uso archive | draw={draw_page_url}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if archive_results_page:
+            results_page_url = archive_results_page
+
+        try:
+            resp = http_get(session, draw_page_url, timeout=30)
+            html = resp.text
+        except requests.RequestException as exc:
+            print(
+                f"[{utc_now_iso()}] WARN | archive draw page non raggiungibile, uso fallback PDF | url={draw_page_url} | err={exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return draw_page_url, results_page_url, pdf_url, used_archive_fallback
+
+    soup = BeautifulSoup(html, "html.parser")
+    for a in soup.select("a[href]"):
+        href = a.get("href", "")
+        if "protennislive.com" in href and href.lower().endswith("mds.pdf"):
+            pdf_url = href
+            break
+
+    return draw_page_url, results_page_url, pdf_url, used_archive_fallback
+
+
 def resolve_runtime_urls(
     tournament_url: str,
     draw_page_url: str,
@@ -1394,9 +1474,18 @@ def resolve_runtime_urls(
     return draw_page_url, results_page_url, tournament_id, fallback_pdf_url
 
 
-def fetch_and_build_rows(draw_page_url: str, results_page_url: str, fallback_pdf_url: str, debug_pdf_preview: bool = False) -> tuple[list[dict], dict]:
+def fetch_and_build_rows(draw_page_url: str, results_page_url: str, fallback_pdf_url: str, year: int, debug_pdf_preview: bool = False) -> tuple[list[dict], dict]:
     session = make_requests_session()
-    pdf_url = discover_pdf_url(session, draw_page_url, fallback_pdf_url)
+    draw_page_url, results_page_url, pdf_url, used_archive_fallback = maybe_switch_current_urls_to_archive(
+        session,
+        draw_page_url,
+        results_page_url,
+        fallback_pdf_url,
+        year,
+    )
+    if not pdf_url:
+        pdf_url, draw_page_url, used_archive_from_discovery = discover_pdf_url(session, draw_page_url, fallback_pdf_url)
+        used_archive_fallback = used_archive_fallback or used_archive_from_discovery
     pdf_resp = http_get(session, pdf_url, timeout=60)
     pages_text = extract_pdf_text(pdf_resp.content)
 
@@ -1424,6 +1513,7 @@ def fetch_and_build_rows(draw_page_url: str, results_page_url: str, fallback_pdf
         "positions": len(positions),
         "matches": len(rows),
         "results_found": len(results_list),
+        "used_archive_fallback": used_archive_fallback,
     }
     return rows, meta
 
@@ -1451,13 +1541,14 @@ def run_once(
         tournament_id=tournament_id,
         year=year,
     )
-    rows, meta = fetch_and_build_rows(draw_page_url, results_page_url, fallback_pdf_url, debug_pdf_preview=debug_pdf_preview)
+    rows, meta = fetch_and_build_rows(draw_page_url, results_page_url, fallback_pdf_url, year=year, debug_pdf_preview=debug_pdf_preview)
     data = csv_bytes(rows)
     changed = write_csv_if_changed(output_path, data)
     status = "AGGIORNATO" if changed else "NESSUNA MODIFICA"
     print(
         f"[{utc_now_iso()}] {status} | file={output_path} | matches={meta['matches']} | "
         f"results_found={meta['results_found']} | released_at={meta['released_at'] or 'n/d'} | "
+        f"archive_fallback={'yes' if meta.get('used_archive_fallback') else 'no'} | "
         f"sha256={sha256(data)[:12]} | pdf={meta['source_pdf']}",
         flush=True,
     )
@@ -1595,9 +1686,33 @@ class AtpParserTests(unittest.TestCase):
         self.assertEqual(canonical_round_to_label(canonical_round_for_stage(32)), "3° turno")
         self.assertEqual(canonical_round_to_label(canonical_round_for_stage(16)), "Ottavi di finale")
 
+    def test_page_explicitly_has_no_current_draws(self) -> None:
+        html = "<html><body><h1>There Are Currently No Draws</h1></body></html>"
+        self.assertTrue(page_explicitly_has_no_current_draws(html))
+
+    def test_current_to_archive_url(self) -> None:
+        self.assertEqual(
+            current_to_archive_url("https://www.atptour.com/en/scores/current/monte-carlo/410/draws", 2025, "draws"),
+            "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/draws",
+        )
+
+    def test_parse_results_blocks_accepts_hash_prefixed_rounds(self) -> None:
+        lines = [
+            "#### Round of 16 - Court Central",
+            "Alex de Minaur",
+            "6 6",
+            "Alexandre Muller",
+            "2 4",
+        ]
+        results = _parse_results_blocks_from_lines(lines)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["round"], "R16")
+        self.assertEqual(results[0]["winner_name_raw"], "Alex de Minaur")
+
+
 
 def run_tests() -> int:
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(RetirementWalkoverTests)
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(AtpParserTests)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1
 
@@ -1654,6 +1769,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 
