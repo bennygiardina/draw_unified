@@ -258,7 +258,12 @@ def format_name(raw_name: str, seed: str = "", entry_status: str = "", country: 
         surname = smart_join_tokens(surname_tokens)
         given_name = smart_join_tokens(given_tokens)
         first_initial = f"{given_name[0].upper()}." if given_name else ""
-        base_name = f"{first_initial} {surname}".strip()
+        
+        # 👉 NUOVA LOGICA per paesi con cognome prima
+        if country in FAMILY_NAME_FIRST_COUNTRIES and normalized_raw_name not in FAMILY_NAME_FIRST_EXCEPTIONS:
+            base_name = f"{surname} {first_initial}".strip()
+        else:
+            base_name = f"{first_initial} {surname}".strip()
 
     extras = []
     if seed:
