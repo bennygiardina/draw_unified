@@ -52,6 +52,9 @@ on:
         default: ""
         type: string
 
+  schedule:
+    - cron: "*/5 * * * *"
+
 permissions:
   contents: write
 
