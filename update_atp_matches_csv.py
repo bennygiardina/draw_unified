@@ -13,7 +13,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -361,30 +361,6 @@ def current_to_archive_url(url: str, year: int, page: str) -> str:
     return f"https://www.atptour.com/en/scores/archive/{slug}/{tournament_id}/{year}/{page}"
 
 
-def archive_sibling_url(url: str, page: str) -> str:
-    url = normalize_tournament_url(url)
-    if not url:
-        return ""
-    m = re.search(r"/en/scores/archive/([^/]+)/([^/]+)/(\d{4})(?:/(draws|results))?$", url)
-    if not m:
-        return ""
-    slug, tournament_id, archive_year = m.group(1), m.group(2), m.group(3)
-    return f"https://www.atptour.com/en/scores/archive/{slug}/{tournament_id}/{archive_year}/{page}"
-
-
-def resolved_archive_urls(draw_page_url: str, results_page_url: str, resolved_draw_url: str) -> tuple[str, str, bool]:
-    resolved_draw_url = normalize_tournament_url(resolved_draw_url)
-    if "/archive/" not in resolved_draw_url:
-        return draw_page_url, results_page_url, False
-
-    archive_draw_page = archive_sibling_url(resolved_draw_url, "draws") or resolved_draw_url
-    archive_results_page = archive_sibling_url(resolved_draw_url, "results")
-    if not archive_results_page and results_page_url and "/archive/" in results_page_url:
-        archive_results_page = results_page_url
-
-    return archive_draw_page, archive_results_page or results_page_url, True
-
-
 def page_explicitly_has_no_current_draws(html: str) -> bool:
     compact = normalize_spaces(BeautifulSoup(html or "", "html.parser").get_text(" ", strip=True))
     return "there are currently no draws" in compact.lower()
@@ -432,7 +408,7 @@ def discover_pdf_url(session: requests.Session, draw_page_url: str, fallback_pdf
         for a in soup.select("a[href]"):
             href = a.get("href", "")
             if "protennislive.com" in href and href.lower().endswith("mds.pdf"):
-                return href, resolved_draw_page_url, used_archive_fallback
+                return urljoin(resp.url, href), normalize_tournament_url(resp.url), used_archive_fallback
     except requests.RequestException as exc:
         print(
             f"[{utc_now_iso()}] WARN | draw page non raggiungibile, uso fallback PDF | url={draw_page_url} | err={exc}",
@@ -1212,16 +1188,152 @@ def build_results_name_lookup(results_list: list[dict]) -> list[str]:
     return names
 
 
+def _looks_like_draw_page_name_line(line: str) -> bool:
+    line = normalize_spaces(line)
+    if not line:
+        return False
+    if line == "Bye":
+        return True
+    if line in {"H2H", "Stats", "Print", "Previous", "Next", "Singles", "Doubles", "Qual Singles"}:
+        return False
+    if map_atp_round_to_canonical(line):
+        return False
+    if re.fullmatch(r"\((?:\d{1,2}|WC|Q|LL|PR|ALT)\)", line):
+        return False
+    if line == "-" or _is_numeric_score_line(line):
+        return False
+    if line.startswith("Image:"):
+        return False
+    return bool(re.search(r"[A-Za-zÀ-ÿ]", line))
+
+
+def _decorate_draw_page_name(base_name: str, extra_token: str) -> str:
+    base_name = normalize_spaces(base_name)
+    extra_token = normalize_spaces(extra_token)
+    if not extra_token:
+        return base_name
+    m = re.fullmatch(r"\(([^)]+)\)", extra_token)
+    if not m:
+        return base_name
+    value = m.group(1).strip()
+    if not value:
+        return base_name
+    if value.isdigit():
+        return f"{base_name} [{value}]"
+    upper = value.upper()
+    if upper in STATUS_LABELS:
+        return f"{base_name} {STATUS_LABELS[upper]}"
+    return base_name
+
+
+def extract_first_round_entries_from_draw_page(draw_page_url: str, session: requests.Session | None = None) -> list[str]:
+    if not draw_page_url:
+        return []
+    session = session or make_requests_session()
+    try:
+        resp = http_get(session, draw_page_url, timeout=30)
+    except requests.RequestException:
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    lines = [normalize_spaces(s) for s in soup.stripped_strings]
+    round_indexes = [
+        idx for idx, line in enumerate(lines)
+        if map_atp_round_to_canonical(line) and line.lower().startswith("round of")
+    ]
+    if len(round_indexes) < 2:
+        return []
+
+    start = round_indexes[0] + 1
+    end = round_indexes[1]
+    section = lines[start:end]
+    entries: list[str] = []
+    i = 0
+    while i < len(section):
+        line = section[i]
+        if not _looks_like_draw_page_name_line(line):
+            i += 1
+            continue
+        entry = "bye" if line == "Bye" else line
+        if i + 1 < len(section) and re.fullmatch(r"\((?:\d{1,2}|WC|Q|LL|PR|ALT)\)", section[i + 1]):
+            if entry != "bye":
+                entry = _decorate_draw_page_name(entry, section[i + 1])
+            i += 1
+        entries.append(entry)
+        i += 1
+    return entries
+
+
+def replace_positions_from_draw_page(positions: list[dict], draw_page_entries: list[str]) -> list[dict]:
+    if len(draw_page_entries) != len(positions):
+        return positions
+    for pos, entry in zip(positions, draw_page_entries):
+        normalized = normalize_spaces(entry)
+        if not normalized:
+            continue
+        if normalized == "bye":
+            pos["player_name"] = "bye"
+            pos["raw_name"] = "Bye"
+            pos["slot_type"] = "bye"
+            pos["seed"] = ""
+            pos["entry_status"] = ""
+            continue
+        pos["player_name"] = normalized
+        pos["raw_name"] = re.sub(r"\s*(?:\[.*?\])+$", "", normalized).strip()
+        pos["slot_type"] = "player"
+    return positions
+
+
+def get_round_label_from_context(current_slots: int, initial_slots: int, bye_count: int) -> str:
+    if initial_slots in {32, 64} and bye_count > 0:
+        mapping = {
+            64: "1° turno",
+            32: "2° turno",
+            16: "Ottavi di finale",
+            8: "Quarti di finale",
+            4: "Semifinali",
+            2: "Finale",
+        }
+        if current_slots in mapping:
+            return mapping[current_slots]
+    return canonical_round_to_label(canonical_round_for_stage(current_slots))
+
+
 def replace_truncated_pdf_names(positions: list[dict], results_list: list[dict]) -> list[dict]:
     manual = {
         "v. b…": "Botic van de Zandschulp",
         "m. g…": "Giovanni Mpetshi Perricard",
         "a. d…": "Alejandro Davidovich Fokina",
+        "... mpetshi perricard": "Giovanni Mpetshi Perricard",
+        "… mpetshi perricard": "Giovanni Mpetshi Perricard",
     }
+    result_names = build_results_name_lookup(results_list)
     for pos in positions:
         current = normalize_spaces(pos.get("player_name", "")).lower()
         raw = normalize_spaces(pos.get("raw_name", "")).lower()
         full_name = manual.get(current) or manual.get(raw)
+
+        if not full_name:
+            source_value = current or raw
+            if source_value and ("…" in source_value or "..." in source_value):
+                cleaned = source_value.replace("…", " ").replace("...", " ")
+                cleaned_tokens = [tok for tok in cleaned.split() if tok]
+                surname = cleaned_tokens[-1] if cleaned_tokens else ""
+                initial = cleaned_tokens[0][0] if cleaned_tokens and len(cleaned_tokens[0]) == 1 else ""
+                matches = []
+                for candidate in result_names:
+                    cand_norm = normalize_person_name_for_matching(candidate)
+                    cand_parts = cand_norm.split()
+                    if not cand_parts:
+                        continue
+                    if surname and cand_parts[-1] != surname:
+                        continue
+                    if initial and cand_parts[0][0] != initial:
+                        continue
+                    matches.append(candidate)
+                if len(matches) == 1:
+                    full_name = matches[0]
+
         if not full_name:
             continue
         pos["raw_name"] = full_name
@@ -1232,7 +1344,6 @@ def replace_truncated_pdf_names(positions: list[dict], results_list: list[dict])
             country=pos.get("country", ""),
         )
     return positions
-
 
 def resolve_winner_from_results_page(player_a: str, player_b: str, winner_full_name: str) -> str:
     a_norm = normalize_person_name_for_matching(player_a)
@@ -1324,6 +1435,8 @@ def slot_display_name(slot: dict) -> str:
 
 
 def build_match_rows(positions: list[dict], round_results: dict[str, list[dict]]) -> list[dict]:
+    initial_slots = len(positions)
+    bye_count = sum(1 for p in positions if p.get("slot_type") == "bye" or p.get("player_name") == "bye")
     current = []
     for p in positions:
         name = p["player_name"]
@@ -1337,7 +1450,7 @@ def build_match_rows(positions: list[dict], round_results: dict[str, list[dict]]
     while len(current) > 1:
         current_slots = len(current)
         canonical_round = canonical_round_for_stage(current_slots)
-        round_label = canonical_round_to_label(canonical_round)
+        round_label = get_round_label_from_context(current_slots, initial_slots, bye_count)
         next_round = []
         results_for_round = round_results.get(canonical_round, [])
         used = [False] * len(results_for_round)
@@ -1406,6 +1519,17 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def archive_page_variant_from_resolved_url(resolved_url: str, page: str) -> str:
+    resolved_url = normalize_tournament_url(resolved_url)
+    if not resolved_url:
+        return ""
+    m = re.search(r"/en/scores/archive/([^/]+)/([^/]+)/(\d{4})/(?:draws|results)/?$", resolved_url)
+    if not m:
+        return ""
+    slug, tournament_id, year = m.group(1), m.group(2), m.group(3)
+    return f"https://www.atptour.com/en/scores/archive/{slug}/{tournament_id}/{year}/{page}"
+
+
 def maybe_switch_current_urls_to_archive(
     session: requests.Session,
     draw_page_url: str,
@@ -1421,6 +1545,7 @@ def maybe_switch_current_urls_to_archive(
     try:
         resp = http_get(session, draw_page_url, timeout=30)
         html = resp.text
+        resolved_draw_page_url = normalize_tournament_url(resp.url)
     except requests.RequestException as exc:
         print(
             f"[{utc_now_iso()}] WARN | draw page non raggiungibile, provo comunque con fallback PDF | url={draw_page_url} | err={exc}",
@@ -1429,18 +1554,15 @@ def maybe_switch_current_urls_to_archive(
         )
         return draw_page_url, results_page_url, pdf_url, used_archive_fallback
 
-    resolved_draw_url = normalize_tournament_url(getattr(resp, "url", "") or draw_page_url)
-    redirected_draw_page, redirected_results_page, redirected_to_archive = resolved_archive_urls(
-        draw_page_url,
-        results_page_url,
-        resolved_draw_url,
-    )
-    if redirected_to_archive:
-        draw_page_url = redirected_draw_page
-        results_page_url = redirected_results_page
+    if "/archive/" in resolved_draw_page_url and resolved_draw_page_url != draw_page_url:
+        archive_draw_page = archive_page_variant_from_resolved_url(resolved_draw_page_url, "draws") or resolved_draw_page_url
+        archive_results_page = archive_page_variant_from_resolved_url(resolved_draw_page_url, "results")
+        draw_page_url = archive_draw_page
+        if archive_results_page:
+            results_page_url = archive_results_page
         used_archive_fallback = True
         print(
-            f"[{utc_now_iso()}] INFO | draw page current reindirizzata ad archive | draw={draw_page_url}",
+            f"[{utc_now_iso()}] INFO | current draw page reindirizzata ad archive | draw={draw_page_url}",
             file=sys.stderr,
             flush=True,
         )
@@ -1462,15 +1584,6 @@ def maybe_switch_current_urls_to_archive(
         try:
             resp = http_get(session, draw_page_url, timeout=30)
             html = resp.text
-            resolved_draw_url = normalize_tournament_url(getattr(resp, "url", "") or draw_page_url)
-            redirected_draw_page, redirected_results_page, redirected_to_archive = resolved_archive_urls(
-                draw_page_url,
-                results_page_url,
-                resolved_draw_url,
-            )
-            if redirected_to_archive:
-                draw_page_url = redirected_draw_page
-                results_page_url = redirected_results_page
         except requests.RequestException as exc:
             print(
                 f"[{utc_now_iso()}] WARN | archive draw page non raggiungibile, uso fallback PDF | url={draw_page_url} | err={exc}",
@@ -1482,13 +1595,11 @@ def maybe_switch_current_urls_to_archive(
     soup = BeautifulSoup(html, "html.parser")
     for a in soup.select("a[href]"):
         href = a.get("href", "")
-        full_href = urljoin(draw_page_url + "/", href)
-        if "protennislive.com" in full_href and full_href.lower().endswith("mds.pdf"):
-            pdf_url = full_href
+        if "protennislive.com" in href and href.lower().endswith("mds.pdf"):
+            pdf_url = urljoin(resp.url, href)
             break
 
     return draw_page_url, results_page_url, pdf_url, used_archive_fallback
-
 
 def resolve_runtime_urls(
     tournament_url: str,
@@ -1546,6 +1657,8 @@ def fetch_and_build_rows(draw_page_url: str, results_page_url: str, fallback_pdf
 
     released_at = extract_released_at(pages_text)
     positions = parse_draw_positions(pages_text)
+    draw_page_entries = extract_first_round_entries_from_draw_page(draw_page_url, session=session)
+    positions = replace_positions_from_draw_page(positions, draw_page_entries)
     results_list = fetch_results_page(results_page_url, session=session)
     positions = replace_truncated_pdf_names(positions, results_list)
     round_results = group_results_by_round(results_list)
@@ -1746,21 +1859,17 @@ class AtpParserTests(unittest.TestCase):
             "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/draws",
         )
 
-    def test_archive_sibling_url(self) -> None:
-        self.assertEqual(
-            archive_sibling_url("https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/draws", "results"),
-            "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/results",
-        )
+    def test_round_labels_shift_for_64_draw_with_byes(self) -> None:
+        self.assertEqual(get_round_label_from_context(64, 64, 8), "1° turno")
+        self.assertEqual(get_round_label_from_context(32, 64, 8), "2° turno")
 
-    def test_resolved_archive_urls_from_redirect(self) -> None:
-        draw_url, results_url, used_archive = resolved_archive_urls(
-            "https://www.atptour.com/en/scores/current/monte-carlo/410/draws",
-            "https://www.atptour.com/en/scores/current/monte-carlo/410/results",
-            "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/draws",
-        )
-        self.assertTrue(used_archive)
-        self.assertEqual(draw_url, "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/draws")
-        self.assertEqual(results_url, "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/results")
+    def test_replace_positions_from_draw_page_restores_mpetshi_initial(self) -> None:
+        positions = [
+            {"player_name": "... Mpetshi Perricard", "raw_name": "... Mpetshi Perricard", "slot_type": "player", "seed": "", "entry_status": "", "country": ""},
+            {"player_name": "J. Thompson", "raw_name": "Jordan Thompson", "slot_type": "player", "seed": "", "entry_status": "", "country": ""},
+        ]
+        fixed = replace_positions_from_draw_page(positions, ["G. Mpetshi Perricard", "J. Thompson"])
+        self.assertEqual(fixed[0]["player_name"], "G. Mpetshi Perricard")
 
     def test_parse_results_blocks_accepts_hash_prefixed_rounds(self) -> None:
         lines = [
