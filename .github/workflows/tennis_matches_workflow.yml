@@ -1,5 +1,3 @@
-name: Update tennis matches CSV
-
 name: Generate tennis matches CSV
 
 on:
