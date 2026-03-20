@@ -219,12 +219,20 @@ def normalize_person_name_for_matching(name: str) -> str:
 
 def surname_from_name(name: str) -> str:
     parts = normalize_person_name_for_matching(name).split()
-    return parts[-1] if parts else ""
+    if not parts:
+        return ""
+    if len(parts) >= 2 and len(parts[-1]) == 1:
+        return parts[0]
+    return parts[-1]
 
 
 def first_initial_from_name(name: str) -> str:
     parts = normalize_person_name_for_matching(name).split()
-    return parts[0][0] if len(parts) >= 2 and parts[0] else ""
+    if len(parts) < 2:
+        return ""
+    if len(parts[-1]) == 1:
+        return parts[-1][0]
+    return parts[0][0] if parts[0] else ""
 
 
 def abbreviated_name_matches(candidate: str, token_name: str) -> bool:
@@ -952,8 +960,8 @@ def wta_tokenize_result_block(result_block: str) -> list[dict]:
 
     result_block = "\n".join(filtered_lines)
     token_re = re.compile(
-        r"(?:[A-Z][a-z]{0,4}\.[ \t]+[A-Z][A-Za-z'`.-]+(?:[ \t]+[A-Z][A-Za-z'`.-]+)*)"
-        r"|(?:W/O|WO|RET|Ret|ret|\d{2}(?:\(\d+\))?(?:[ \t]+\d{2}(?:\(\d+\))?){0,4})"
+        r"(?:[A-Z][a-z]{0,4}\.[ 	]+[A-Z][A-Za-z'`.-]+(?:[ 	]+[A-Z][A-Za-z'`.-]+)*)"
+        r"|(?:W/O|WO|RET|Ret|ret|\d{2}(?:\(\d+\))?(?:[ 	]+\d{2}(?:\(\d+\))?){0,4})"
     )
 
     tokens: list[dict] = []
