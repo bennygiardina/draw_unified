@@ -490,6 +490,52 @@ def parse_draw_line(line: str) -> dict | None:
     }
 
 
+
+SUPPORTED_DRAW_SIZES = (128, 96, 64, 56, 48, 32, 28, 24, 16)
+
+
+def normalize_atp_positions(positions: list[dict]) -> list[dict]:
+    """Trim stray parsed slots from ATP PDFs and keep a legal main-draw size."""
+    if not positions:
+        return positions
+
+    by_pos = {int(p["draw_position"]): p for p in positions}
+    sorted_positions = sorted(by_pos)
+
+    if len(sorted_positions) in SUPPORTED_DRAW_SIZES and sorted_positions == list(range(1, len(sorted_positions) + 1)):
+        return [by_pos[i] for i in sorted_positions]
+
+    contiguous = 0
+    for expected in range(1, max(sorted_positions) + 1):
+        if expected in by_pos:
+            contiguous = expected
+        else:
+            break
+
+    candidate_size = None
+    for size in SUPPORTED_DRAW_SIZES:
+        if size <= contiguous:
+            candidate_size = size
+            break
+
+    if candidate_size is None:
+        even_count = len(sorted_positions) - (len(sorted_positions) % 2)
+        for size in SUPPORTED_DRAW_SIZES:
+            if size <= even_count:
+                candidate_size = size
+                break
+
+    if candidate_size is None:
+        raise RuntimeError(f"Numero di posizioni ATP non valido nel PDF: {len(sorted_positions)}")
+
+    trimmed = [by_pos[i] for i in range(1, candidate_size + 1) if i in by_pos]
+    if len(trimmed) != candidate_size:
+        missing = [str(i) for i in range(1, candidate_size + 1) if i not in by_pos][:10]
+        raise RuntimeError(
+            f"PDF ATP con posizioni incomplete: attese {candidate_size}, trovate {len(trimmed)}; mancanti: {', '.join(missing)}"
+        )
+    return trimmed
+
 def parse_draw_positions(pages_text: list[str]) -> list[dict]:
     positions: list[dict] = []
     seen_positions = set()
@@ -506,7 +552,7 @@ def parse_draw_positions(pages_text: list[str]) -> list[dict]:
     positions.sort(key=lambda p: p["draw_position"])
     if not positions:
         raise RuntimeError("Nessuna posizione draw ATP trovata nel PDF")
-    return positions
+    return normalize_atp_positions(positions)
 
 
 def format_scores_from_result(player_a: str, player_b: str, winner: str, res: dict) -> tuple[str, str]:
@@ -753,7 +799,14 @@ def build_match_rows_atp(positions: list[dict], round_results: dict[str, list[di
     match_rows: list[dict] = []
     initial_size = len(current)
 
+    if len(current) % 2 != 0:
+        raise RuntimeError(f"Numero di slot ATP dispari dopo il parsing del draw: {len(current)}")
+
     while len(current) > 1:
+        if len(current) % 2 != 0:
+            raise RuntimeError(
+                f"Numero di slot ATP dispari durante la costruzione del tabellone: {len(current)}"
+            )
         round_size = len(current) // 2
         round_label = get_round_label(round_size, initial_size)
         next_round = []
