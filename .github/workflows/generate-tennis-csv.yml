@@ -1,50 +1,48 @@
 name: Generate Tennis CSV
 
 on:
-workflow_dispatch:
-inputs:
-tour:
-description: "Tour (atp o wta)"
-required: true
-default: "atp"
-tournament_url:
-description: "Tournament URL"
-required: true
-output_file:
-description: "Output CSV file"
-required: true
-year:
-description: "Year (optional)"
-required: false
+  workflow_dispatch:
+    inputs:
+      tour:
+        description: "Tour (atp o wta)"
+        required: true
+        default: "atp"
+      tournament_url:
+        description: "Tournament URL"
+        required: true
+      output_file:
+        description: "Output CSV file"
+        required: true
+      year:
+        description: "Year (optional)"
+        required: false
 
-schedule:
-- cron: "*/5 * * * *"  # ogni 5 minuti
+  schedule:
+    - cron: "*/5 * * * *"
 
 jobs:
-generate:
-runs-on: ubuntu-latest
+  generate:
+    runs-on: ubuntu-latest
 
-```
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
-  - name: Set up Python
-    uses: actions/setup-python@v6
-    with:
-      python-version: "3.11"
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
 
-  - name: Install dependencies
-    run: |
-      python -m pip install --upgrade pip
-      pip install requests beautifulsoup4 pandas pypdf
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 pandas pypdf
 
-  - name: Run tennis parser
-    run: |
-      python run_tennis_parser.py \
-        --tour "${{ github.event.inputs.tour || 'atp' }}" \
-        --tournament-url "${{ github.event.inputs.tournament_url || 'https://www.atptour.com/en/scores/current/monte-carlo/410' }}" \
-        --output "${{ github.event.inputs.output_file || 'output.csv' }}" \
-        ${{ github.event.inputs.year && format('--year "{0}"', github.event.inputs.year) || '' }} \
-        --atp-script "update_atp_matches_csv.py"
-```
+      - name: Run tennis parser
+        run: |
+          python run_tennis_parser.py \
+            --tour "${{ github.event.inputs.tour || 'atp' }}" \
+            --tournament-url "${{ github.event.inputs.tournament_url || 'https://www.atptour.com/en/scores/current/monte-carlo/410' }}" \
+            --output "${{ github.event.inputs.output_file || 'output.csv' }}" \
+            ${{ github.event.inputs.year && format('--year "{0}"', github.event.inputs.year) || '' }} \
+            --atp-script "update_atp_matches_csv.py"
