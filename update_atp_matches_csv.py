@@ -32,6 +32,14 @@ LOWERCASE_PARTICLES = {
     "van", "von", "der", "den", "la", "le"
 }
 
+COUNTRIES_SURNAME_FIRST_DISPLAY = {
+    "CHN", "KOR", "TPE", "JPN",
+}
+
+WESTERN_NAME_EXCEPTIONS = {
+    ("JPN", "naomi osaka"),
+}
+
 STATUS_LABELS = {
     "WC": "[WC]",
     "Q": "[Q]",
@@ -136,39 +144,45 @@ def format_name(raw_name: str, seed: str = "", entry_status: str = "", country: 
     if raw_name == "TBA":
         return "TBA"
 
+    normalized_raw = re.sub(r"\s+", " ", raw_name.replace(",", " ")).strip().lower()
+
     if "," in raw_name:
         surname_part, given_part = [x.strip() for x in raw_name.split(",", 1)]
-        surname_tokens = surname_part.split()
-        given_tokens = given_part.split()
-
-        surname = smart_join_tokens(surname_tokens)
-        given_name = smart_join_tokens(given_tokens)
-        first_initial = f"{given_name[0].upper()}." if given_name else ""
-        base_name = f"{first_initial} {surname}".strip()
+        surname = smart_join_tokens(surname_part.split())
+        given_name = smart_join_tokens(given_part.split())
     else:
         tokens = raw_name.replace(",", "").split()
 
         if len(tokens) == 1:
             base_name = smart_title_token(tokens[0])
+            return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
+
+        # ATP-style tipico: COGNOME Nome
+        uppercase_prefix = []
+        first_non_upper_idx = None
+        for i, tok in enumerate(tokens):
+            if tok.isupper():
+                uppercase_prefix.append(tok)
+            else:
+                first_non_upper_idx = i
+                break
+
+        if uppercase_prefix and first_non_upper_idx is not None:
+            surname = smart_join_tokens(uppercase_prefix)
+            given_name = smart_join_tokens(tokens[first_non_upper_idx:])
         else:
-            surname_tokens = []
-            given_tokens = []
+            # fallback "occidentale": Nome Cognome
+            given_name = smart_join_tokens(tokens[:-1])
+            surname = smart_join_tokens([tokens[-1]])
 
-            for i, tok in enumerate(tokens):
-                if tok.isupper():
-                    surname_tokens.append(tok)
-                else:
-                    given_tokens = tokens[i:]
-                    break
+    first_initial = f"{given_name[0].upper()}." if given_name else ""
 
-            if not surname_tokens or not given_tokens:
-                surname_tokens = tokens[:-1]
-                given_tokens = [tokens[-1]]
-
-            surname = smart_join_tokens(surname_tokens)
-            given_name = smart_join_tokens(given_tokens)
-            first_initial = f"{given_name[0].upper()}." if given_name else ""
-            base_name = f"{first_initial} {surname}".strip()
+    if (country, normalized_raw) in WESTERN_NAME_EXCEPTIONS:
+        base_name = f"{first_initial} {surname}".strip()
+    elif country in COUNTRIES_SURNAME_FIRST_DISPLAY:
+        base_name = f"{surname} {first_initial}".strip()
+    else:
+        base_name = f"{first_initial} {surname}".strip()
 
     return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
 
