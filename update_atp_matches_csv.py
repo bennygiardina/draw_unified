@@ -98,6 +98,10 @@ def smart_join_tokens(tokens: list[str]) -> str:
     return " ".join(smart_title_token(tok) for tok in tokens if tok)
 
 
+def normalize_spaces(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip()
+
+
 def get_round_label(round_size: int, initial_draw_size: int) -> str:
     if round_size == 1:
         return "Finale"
@@ -703,7 +707,7 @@ def normalize_draw_positions(rows: list[dict]) -> list[dict]:
     max_pos = max(by_pos)
 
     # Masters 1000 / draw 96 con bye impliciti su 128 posizioni
-    if len(rows) == 96 and max_pos == 128:
+    if len(rows) == 96 and max_pos >= 96:
         return [by_pos.get(pos, make_bye_position(pos)) for pos in range(1, 129)]
 
     return rows
