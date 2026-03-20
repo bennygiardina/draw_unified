@@ -13,7 +13,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -359,6 +359,30 @@ def current_to_archive_url(url: str, year: int, page: str) -> str:
         return ""
     slug, tournament_id = m.group(1), m.group(2)
     return f"https://www.atptour.com/en/scores/archive/{slug}/{tournament_id}/{year}/{page}"
+
+
+def archive_sibling_url(url: str, page: str) -> str:
+    url = normalize_tournament_url(url)
+    if not url:
+        return ""
+    m = re.search(r"/en/scores/archive/([^/]+)/([^/]+)/(\d{4})(?:/(draws|results))?$", url)
+    if not m:
+        return ""
+    slug, tournament_id, archive_year = m.group(1), m.group(2), m.group(3)
+    return f"https://www.atptour.com/en/scores/archive/{slug}/{tournament_id}/{archive_year}/{page}"
+
+
+def resolved_archive_urls(draw_page_url: str, results_page_url: str, resolved_draw_url: str) -> tuple[str, str, bool]:
+    resolved_draw_url = normalize_tournament_url(resolved_draw_url)
+    if "/archive/" not in resolved_draw_url:
+        return draw_page_url, results_page_url, False
+
+    archive_draw_page = archive_sibling_url(resolved_draw_url, "draws") or resolved_draw_url
+    archive_results_page = archive_sibling_url(resolved_draw_url, "results")
+    if not archive_results_page and results_page_url and "/archive/" in results_page_url:
+        archive_results_page = results_page_url
+
+    return archive_draw_page, archive_results_page or results_page_url, True
 
 
 def page_explicitly_has_no_current_draws(html: str) -> bool:
@@ -1405,6 +1429,22 @@ def maybe_switch_current_urls_to_archive(
         )
         return draw_page_url, results_page_url, pdf_url, used_archive_fallback
 
+    resolved_draw_url = normalize_tournament_url(getattr(resp, "url", "") or draw_page_url)
+    redirected_draw_page, redirected_results_page, redirected_to_archive = resolved_archive_urls(
+        draw_page_url,
+        results_page_url,
+        resolved_draw_url,
+    )
+    if redirected_to_archive:
+        draw_page_url = redirected_draw_page
+        results_page_url = redirected_results_page
+        used_archive_fallback = True
+        print(
+            f"[{utc_now_iso()}] INFO | draw page current reindirizzata ad archive | draw={draw_page_url}",
+            file=sys.stderr,
+            flush=True,
+        )
+
     if "/current/" in draw_page_url and page_explicitly_has_no_current_draws(html):
         archive_draw_page = current_to_archive_url(draw_page_url, year, "draws")
         archive_results_page = current_to_archive_url(results_page_url or infer_results_page_url_from_draw(draw_page_url), year, "results")
@@ -1422,6 +1462,15 @@ def maybe_switch_current_urls_to_archive(
         try:
             resp = http_get(session, draw_page_url, timeout=30)
             html = resp.text
+            resolved_draw_url = normalize_tournament_url(getattr(resp, "url", "") or draw_page_url)
+            redirected_draw_page, redirected_results_page, redirected_to_archive = resolved_archive_urls(
+                draw_page_url,
+                results_page_url,
+                resolved_draw_url,
+            )
+            if redirected_to_archive:
+                draw_page_url = redirected_draw_page
+                results_page_url = redirected_results_page
         except requests.RequestException as exc:
             print(
                 f"[{utc_now_iso()}] WARN | archive draw page non raggiungibile, uso fallback PDF | url={draw_page_url} | err={exc}",
@@ -1433,8 +1482,9 @@ def maybe_switch_current_urls_to_archive(
     soup = BeautifulSoup(html, "html.parser")
     for a in soup.select("a[href]"):
         href = a.get("href", "")
-        if "protennislive.com" in href and href.lower().endswith("mds.pdf"):
-            pdf_url = href
+        full_href = urljoin(draw_page_url + "/", href)
+        if "protennislive.com" in full_href and full_href.lower().endswith("mds.pdf"):
+            pdf_url = full_href
             break
 
     return draw_page_url, results_page_url, pdf_url, used_archive_fallback
@@ -1696,6 +1746,22 @@ class AtpParserTests(unittest.TestCase):
             "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/draws",
         )
 
+    def test_archive_sibling_url(self) -> None:
+        self.assertEqual(
+            archive_sibling_url("https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/draws", "results"),
+            "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/results",
+        )
+
+    def test_resolved_archive_urls_from_redirect(self) -> None:
+        draw_url, results_url, used_archive = resolved_archive_urls(
+            "https://www.atptour.com/en/scores/current/monte-carlo/410/draws",
+            "https://www.atptour.com/en/scores/current/monte-carlo/410/results",
+            "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/draws",
+        )
+        self.assertTrue(used_archive)
+        self.assertEqual(draw_url, "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/draws")
+        self.assertEqual(results_url, "https://www.atptour.com/en/scores/archive/monte-carlo/410/2025/results")
+
     def test_parse_results_blocks_accepts_hash_prefixed_rounds(self) -> None:
         lines = [
             "#### Round of 16 - Court Central",
@@ -1769,6 +1835,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 
