@@ -804,7 +804,9 @@ def resolve_runtime_urls(tournament_url: str, draw_page_url: str, results_page_u
     tournament_url = normalize_tournament_url(tournament_url or DEFAULT_ATP_TOURNAMENT_URL)
     draw_page_url = normalize_tournament_url(draw_page_url or DEFAULT_ATP_DRAW_PAGE)
     results_page_url = normalize_tournament_url(results_page_url or DEFAULT_ATP_RESULTS_PAGE)
-    tournament_id = (tournament_id or DEFAULT_ATP_TOURNAMENT_ID or "").strip()
+    # Importante: non precompilare subito con il default 403,
+    # altrimenti tornei diversi (es. Indian Wells 404) restano bloccati su Miami.
+    tournament_id = (tournament_id or "").strip()
 
     if tournament_url:
         if not draw_page_url:
@@ -818,12 +820,16 @@ def resolve_runtime_urls(tournament_url: str, draw_page_url: str, results_page_u
         results_page_url = infer_results_page_url_from_draw(draw_page_url)
     if not draw_page_url:
         raise ValueError("Devi specificare --tournament-url oppure --draw-page")
+
     if not tournament_id:
         tournament_id = infer_tournament_id_from_url(draw_page_url)
     if not tournament_id and tournament_url:
         tournament_id = infer_tournament_id_from_url(tournament_url)
+    if not tournament_id and results_page_url:
+        tournament_id = infer_tournament_id_from_url(results_page_url)
     if not tournament_id:
-        raise ValueError("Impossibile ricavare tournament_id dall'URL. Passa --tournament-id")
+        tournament_id = DEFAULT_ATP_TOURNAMENT_ID
+
     fallback_pdf_url = DEFAULT_ATP_FALLBACK_PDF.format(year=year, tournament_id=tournament_id)
     return draw_page_url, results_page_url, tournament_id, fallback_pdf_url
 
