@@ -41,4 +41,4 @@ jobs:
             --tournament-url "${{ github.event.inputs.tournament_url }}" \
             --output "${{ github.event.inputs.output_file }}" \
             ${{ github.event.inputs.year && format('--year "{0}"', github.event.inputs.year) || '' }} \
-            --atp-script "update_atp_matches_csv_fixed.py"
+            --atp-script "update_atp_matches_csv.py"
