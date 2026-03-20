@@ -147,6 +147,21 @@ def name_has_ellipsis(raw_name: str) -> bool:
     return bool(ELLIPSIS_RE.search(raw_name or ""))
 
 
+def looks_like_surname_first(raw_name: str) -> bool:
+    raw_name = (raw_name or "").strip()
+    if not raw_name:
+        return False
+
+    tokens = raw_name.replace(",", "").split()
+    if len(tokens) < 2:
+        return False
+
+    if tokens[0].isupper() and not tokens[1].isupper():
+        return True
+
+    return False
+
+
 def format_name(raw_name: str, seed: str = "", entry_status: str = "", country: str = "") -> str:
     raw_name = (raw_name or "").strip()
     country = (country or "").strip().upper()
@@ -177,28 +192,19 @@ def format_name(raw_name: str, seed: str = "", entry_status: str = "", country: 
         base_name = smart_title_token(tokens[0])
         return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
 
-    uppercase_prefix = []
-    for tok in tokens:
-        if tok.isupper():
-            uppercase_prefix.append(tok)
-        else:
-            break
-
-    if uppercase_prefix and len(uppercase_prefix) < len(tokens):
-        surname_tokens = uppercase_prefix
-        given_tokens = tokens[len(uppercase_prefix):]
-    elif country in COUNTRIES_SURNAME_FIRST:
+    if country in COUNTRIES_SURNAME_FIRST and looks_like_surname_first(raw_name):
         surname_tokens = [tokens[0]]
         given_tokens = tokens[1:]
     else:
-        given_tokens = [tokens[0]]
-        surname_tokens = tokens[1:]
+        given_tokens = tokens[:-1]
+        surname_tokens = [tokens[-1]]
 
     surname = smart_join_tokens(surname_tokens)
     given_name = smart_join_tokens(given_tokens)
     first_initial = f"{given_name[0].upper()}." if given_name else ""
     base_name = f"{first_initial} {surname}".strip()
     return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
+
 
 def normalize_person_name_for_matching(name: str) -> str:
     name = (name or "").strip().lower()
@@ -1135,6 +1141,12 @@ def run_once(output_path: Path, tour: str, tournament_url: str, draw_page_url: s
 # =========================
 
 class UnifiedParserTests(unittest.TestCase):
+    def test_format_name_wta_asian_names(self) -> None:
+        self.assertEqual(format_name("Naomi Osaka", country="JPN"), "N. Osaka")
+        self.assertEqual(format_name("Xinyu Wang", country="CHN"), "X. Wang")
+        self.assertEqual(format_name("Qinwen Zheng", country="CHN"), "Q. Zheng")
+        self.assertEqual(format_name("WANG Xinyu", country="CHN"), "X. Wang")
+
     def test_retirement_aligned_score_keeps_one_one(self) -> None:
         res = {
             "score_raw": "6-3 3-6 0-3 RET",
@@ -1173,7 +1185,7 @@ class UnifiedParserTests(unittest.TestCase):
     def test_mc_casing_and_country_aware_names(self) -> None:
         self.assertEqual(smart_title_token("mcnally"), "McNally")
         self.assertEqual(smart_title_token("mccartney"), "McCartney")
-        self.assertEqual(format_name("Wang Xinyu", country="CHN"), "X. Wang")
+        self.assertEqual(format_name("Xinyu Wang", country="CHN"), "X. Wang")
         self.assertEqual(format_name("Jasmine Paolini", country="ITA"), "J. Paolini")
 
     def test_detect_tour(self) -> None:
