@@ -3,7 +3,7 @@ name: Update tennis matches CSV
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
@@ -35,7 +35,7 @@ jobs:
             --pdf-url "https://wtafiles.wtatennis.com/pdf/draws/2026/902/MDS.pdf"
 
       - name: Upload WTA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: wta-csv
           path: data/wta_matches_format.csv
@@ -70,7 +70,7 @@ jobs:
             --year "2026"
 
       - name: Upload ATP artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: atp-csv
           path: data/atp_matches_format.csv
@@ -85,13 +85,13 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download WTA artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: wta-csv
           path: data
 
       - name: Download ATP artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: atp-csv
           path: data
