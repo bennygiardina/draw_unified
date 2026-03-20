@@ -21,11 +21,11 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
-DEFAULT_TOURNAMENT_URL = "https://www.atptour.com/en/scores/current/miami/403"
+DEFAULT_TOURNAMENT_URL = "https://www.atptour.com/en/scores/current/indian_wells/404"
 DEFAULT_DRAW_PAGE = ""
 DEFAULT_RESULTS_PAGE = ""
 DEFAULT_FALLBACK_PDF = "https://www.protennislive.com/posting/{year}/{tournament_id}/mds.pdf"
-DEFAULT_TOURNAMENT_ID = "403"
+DEFAULT_TOURNAMENT_ID = "404"
 
 LOWERCASE_PARTICLES = {
     "de", "del", "della", "di", "da", "dos", "das",
