@@ -35,22 +35,22 @@ def main() -> int:
     parser.add_argument("--tour", required=True, help="atp oppure wta")
     parser.add_argument("--output", default="matches_format.csv", help="CSV di output")
 
-    # ATP
+    # ATP args
     parser.add_argument("--tournament-url", default="", help="URL torneo ATP")
     parser.add_argument("--draw-page", default="", help="URL draw ATP")
     parser.add_argument("--results-page", default="", help="URL results ATP")
     parser.add_argument("--tournament-id", default="", help="ID torneo ATP")
     parser.add_argument("--year", default="", help="Anno torneo ATP")
 
-    # WTA
+    # WTA args
     parser.add_argument("--pdf-url", default="", help="URL PDF WTA")
 
-    # common
+    # Common args
     parser.add_argument("--watch", action="store_true", help="Modalità watch")
     parser.add_argument("--interval", type=int, default=1800, help="Intervallo in secondi")
     parser.add_argument("--run-tests", action="store_true", help="Esegue i test dello script selezionato")
 
-    # explicit paths
+    # Explicit script paths
     parser.add_argument("--atp-script", default=DEFAULT_ATP_SCRIPT, help="Path script ATP")
     parser.add_argument("--wta-script", default=DEFAULT_WTA_SCRIPT, help="Path script WTA")
 
@@ -72,9 +72,7 @@ def main() -> int:
         if args.year:
             cmd += ["--year", str(args.year)]
         if args.watch:
-            cmd += ["--watch"]
-        if args.interval:
-            cmd += ["--interval", str(args.interval)]
+            cmd += ["--watch", "--interval", str(args.interval)]
         if args.run_tests:
             cmd += ["--run-tests"]
 
@@ -85,9 +83,7 @@ def main() -> int:
         if args.pdf_url:
             cmd += ["--pdf-url", args.pdf_url]
         if args.watch:
-            cmd += ["--watch"]
-        if args.interval:
-            cmd += ["--interval", str(args.interval)]
+            cmd += ["--watch", "--interval", str(args.interval)]
         if args.run_tests:
             cmd += ["--run-tests"]
 
