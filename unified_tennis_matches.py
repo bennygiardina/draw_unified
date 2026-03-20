@@ -38,8 +38,12 @@ LOWERCASE_PARTICLES = {
     "van", "von", "der", "den", "la", "le"
 }
 
-COUNTRIES_SURNAME_FIRST = {
-    "CHN", "JPN", "KOR", "TPE", "HKG",
+COUNTRIES_SURNAME_FIRST_DISPLAY = {
+    "CHN", "KOR", "TPE", "JPN",
+}
+
+WESTERN_NAME_EXCEPTIONS = {
+    ("JPN", "naomi osaka"),
 }
 
 STATUS_LABELS = {
@@ -165,46 +169,45 @@ def looks_like_surname_first(raw_name: str) -> bool:
 def format_name(raw_name: str, seed: str = "", entry_status: str = "", country: str = "") -> str:
     raw_name = (raw_name or "").strip()
     country = (country or "").strip().upper()
-
     if not raw_name:
         return ""
     if raw_name == "Bye":
         return "bye"
-    if raw_name == "Qualifier / Lucky Loser":
-        return "[Q/LL]"
-    if raw_name == "Qualifier":
-        return "[Q]"
-    if raw_name == "TBA":
-        return "TBA"
+
+    normalized_raw = re.sub(r"\s+", " ", raw_name.replace(",", " ")).strip().lower()
 
     if "," in raw_name:
         surname_part, given_part = [x.strip() for x in raw_name.split(",", 1)]
         surname = smart_join_tokens(surname_part.split())
         given_name = smart_join_tokens(given_part.split())
-        first_initial = f"{given_name[0].upper()}." if given_name else ""
-        base_name = f"{first_initial} {surname}".strip()
-        return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
-
-    tokens = raw_name.replace(",", "").split()
-    if not tokens:
-        return ""
-    if len(tokens) == 1:
-        base_name = smart_title_token(tokens[0])
-        return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
-
-    if country in COUNTRIES_SURNAME_FIRST and looks_like_surname_first(raw_name):
-        surname_tokens = [tokens[0]]
-        given_tokens = tokens[1:]
     else:
-        given_tokens = tokens[:-1]
-        surname_tokens = [tokens[-1]]
+        tokens = raw_name.replace(",", "").split()
+        if not tokens:
+            return ""
+        if len(tokens) == 1:
+            base_name = smart_title_token(tokens[0])
+            return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
 
-    surname = smart_join_tokens(surname_tokens)
-    given_name = smart_join_tokens(given_tokens)
+        if looks_like_surname_first(raw_name):
+            surname_tokens = [tokens[0]]
+            given_tokens = tokens[1:]
+        else:
+            given_tokens = tokens[:-1]
+            surname_tokens = [tokens[-1]]
+
+        surname = smart_join_tokens(surname_tokens)
+        given_name = smart_join_tokens(given_tokens)
+
     first_initial = f"{given_name[0].upper()}." if given_name else ""
-    base_name = f"{first_initial} {surname}".strip()
-    return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
 
+    if (country, normalized_raw) in WESTERN_NAME_EXCEPTIONS:
+        base_name = f"{first_initial} {surname}".strip()
+    elif country in COUNTRIES_SURNAME_FIRST_DISPLAY:
+        base_name = f"{surname} {first_initial}".strip()
+    else:
+        base_name = f"{first_initial} {surname}".strip()
+
+    return build_name_with_extras(base_name, seed=seed, entry_status=entry_status)
 
 def normalize_person_name_for_matching(name: str) -> str:
     name = (name or "").strip().lower()
@@ -1143,9 +1146,9 @@ def run_once(output_path: Path, tour: str, tournament_url: str, draw_page_url: s
 class UnifiedParserTests(unittest.TestCase):
     def test_format_name_wta_asian_names(self) -> None:
         self.assertEqual(format_name("Naomi Osaka", country="JPN"), "N. Osaka")
-        self.assertEqual(format_name("Xinyu Wang", country="CHN"), "X. Wang")
-        self.assertEqual(format_name("Qinwen Zheng", country="CHN"), "Q. Zheng")
-        self.assertEqual(format_name("WANG Xinyu", country="CHN"), "X. Wang")
+        self.assertEqual(format_name("Xinyu Wang", country="CHN"), "W. Xinyu")
+        self.assertEqual(format_name("Qinwen Zheng", country="CHN"), "Z. Qinwen")
+        self.assertEqual(format_name("WANG Xinyu", country="CHN"), "W. Xinyu")
 
     def test_retirement_aligned_score_keeps_one_one(self) -> None:
         res = {
@@ -1185,7 +1188,7 @@ class UnifiedParserTests(unittest.TestCase):
     def test_mc_casing_and_country_aware_names(self) -> None:
         self.assertEqual(smart_title_token("mcnally"), "McNally")
         self.assertEqual(smart_title_token("mccartney"), "McCartney")
-        self.assertEqual(format_name("Xinyu Wang", country="CHN"), "X. Wang")
+        self.assertEqual(format_name("Xinyu Wang", country="CHN"), "W. Xinyu")
         self.assertEqual(format_name("Jasmine Paolini", country="ITA"), "J. Paolini")
 
     def test_detect_tour(self) -> None:
