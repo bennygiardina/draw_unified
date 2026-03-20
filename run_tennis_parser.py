@@ -25,15 +25,35 @@ def resolve_script_path(script_name: str) -> Path:
     return Path(script_name).expanduser().resolve()
 
 
+def validate_args(args: argparse.Namespace, tour: str) -> None:
+    if not args.output or not str(args.output).strip():
+        raise ValueError("--output è obbligatorio")
+
+    if tour == "wta":
+        if not args.pdf_url or not str(args.pdf_url).strip():
+            raise ValueError("In modalità WTA devi passare --pdf-url")
+
+    if tour == "atp":
+        has_tournament_url = bool(args.tournament_url and str(args.tournament_url).strip())
+        has_draw_page = bool(args.draw_page and str(args.draw_page).strip())
+
+        if not has_tournament_url and not has_draw_page:
+            raise ValueError(
+                "In modalità ATP devi passare almeno uno tra --tournament-url e --draw-page"
+            )
+
+
 def run_subprocess(cmd: list[str]) -> int:
     proc = subprocess.run(cmd)
     return proc.returncode
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Dispatcher unico per parser ATP/WTA.")
+    parser = argparse.ArgumentParser(
+        description="Dispatcher unico per parser ATP/WTA con validazione input."
+    )
     parser.add_argument("--tour", required=True, help="atp oppure wta")
-    parser.add_argument("--output", default="matches_format.csv", help="CSV di output")
+    parser.add_argument("--output", required=True, help="Percorso CSV di output")
 
     # ATP args
     parser.add_argument("--tournament-url", default="", help="URL torneo ATP")
@@ -48,14 +68,24 @@ def main() -> int:
     # Common args
     parser.add_argument("--watch", action="store_true", help="Modalità watch")
     parser.add_argument("--interval", type=int, default=1800, help="Intervallo in secondi")
-    parser.add_argument("--run-tests", action="store_true", help="Esegue i test dello script selezionato")
+    parser.add_argument(
+        "--run-tests",
+        action="store_true",
+        help="Esegue i test dello script selezionato"
+    )
 
     # Explicit script paths
     parser.add_argument("--atp-script", default=DEFAULT_ATP_SCRIPT, help="Path script ATP")
     parser.add_argument("--wta-script", default=DEFAULT_WTA_SCRIPT, help="Path script WTA")
 
     args = parser.parse_args()
-    tour = normalize_tour(args.tour)
+
+    try:
+        tour = normalize_tour(args.tour)
+        validate_args(args, tour)
+    except ValueError as exc:
+        print(f"ERRORE: {exc}", file=sys.stderr)
+        return 2
 
     if tour == "atp":
         script_path = resolve_script_path(args.atp_script)
