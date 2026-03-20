@@ -1,0 +1,103 @@
+name: Update tennis matches CSV
+
+on:
+  workflow_dispatch:
+    inputs:
+      tour:
+        description: "Tour da aggiornare"
+        required: true
+        default: "wta"
+        type: choice
+        options:
+          - auto
+          - atp
+          - wta
+      output_file:
+        description: "Percorso file CSV di output"
+        required: true
+        default: "data/matches_format.csv"
+        type: string
+      tournament_url:
+        description: "URL torneo (utile per ATP o auto-detect)"
+        required: false
+        default: "https://www.wtatennis.com/tournaments/miami-open/"
+        type: string
+      draw_page:
+        description: "Pagina draw ATP"
+        required: false
+        default: ""
+        type: string
+      results_page:
+        description: "Pagina risultati ATP"
+        required: false
+        default: ""
+        type: string
+      tournament_id:
+        description: "Tournament ID ATP per fallback PDF"
+        required: false
+        default: ""
+        type: string
+      year:
+        description: "Anno per fallback PDF ATP"
+        required: false
+        default: "2026"
+        type: string
+      pdf_url:
+        description: "URL PDF WTA o PDF diretto"
+        required: false
+        default: "https://wtafiles.wtatennis.com/pdf/draws/2026/902/MDS.pdf"
+        type: string
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tennis-matches-csv
+  cancel-in-progress: false
+
+jobs:
+  update-csv:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 pypdf urllib3
+
+      - name: Ensure output folder exists
+        run: |
+          mkdir -p "$(dirname \"${{ github.event.inputs.output_file || 'data/matches_format.csv' }}\")"
+
+      - name: Run unified parser
+        run: |
+          python unified_tennis_matches.py \
+            --tour "${{ github.event.inputs.tour || 'wta' }}" \
+            --output "${{ github.event.inputs.output_file || 'data/matches_format.csv' }}" \
+            --tournament-url "${{ github.event.inputs.tournament_url || 'https://www.wtatennis.com/tournaments/miami-open/' }}" \
+            --draw-page "${{ github.event.inputs.draw_page || '' }}" \
+            --results-page "${{ github.event.inputs.results_page || '' }}" \
+            --tournament-id "${{ github.event.inputs.tournament_id || '' }}" \
+            --year "${{ github.event.inputs.year || '2026' }}" \
+            --pdf-url "${{ github.event.inputs.pdf_url || 'https://wtafiles.wtatennis.com/pdf/draws/2026/902/MDS.pdf' }}"
+
+      - name: Commit updated CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${{ github.event.inputs.output_file || 'data/matches_format.csv' }}"
+          if git diff --cached --quiet; then
+            echo "Nessuna modifica da committare"
+            exit 0
+          fi
+          git commit -m "chore: update tennis matches CSV"
+          git push
